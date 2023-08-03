@@ -1,5 +1,5 @@
 from requests.auth import HTTPBasicAuth
-from cohere_sagemaker import Client
+#from cohere_sagemaker import Client
 import streamlit as st
 import requests
 import boto3
@@ -8,12 +8,18 @@ import yaml
 import re
 
 
-
-TEXT_EMBEDDING_ENDPOINT_NAME = '<ENTER YOUR TEXT EMBEDDING ENDPOINT NAME HERE>'
-TEXT_GENERATION_ENDPOINT_NAME = '<ENTER YOUR TEXT GENERATION ENDPOINT NAME HERE>'
+TEXT_EMBEDDING_ENDPOINT_NAME = 'huggingface-textembedding-gpt-j-6b-fp16-1691075868'
+TEXT_GENERATION_MODEL_ENDPOINT_NAME_COHERE = 'cohere-medium-1680827379'
+TEXT_GENERATION_ENDPOINT_NAME = 'huggingface-text2text-flan-t5-xl-1691100607'
+MAX_LENGTH = 1024
+NUM_RETURN_SEQUENCES = 1
+TOP_K = 100
+TOP_P = 0.9
+DO_SAMPLE = True 
+CONTENT_TYPE = 'application/json'
 
 sagemaker_client = boto3.client('runtime.sagemaker')
-cohere_client = Client(endpoint_name=TEXT_GENERATION_ENDPOINT_NAME)
+#cohere_client = Client(endpoint_name=TEXT_GENERATION_ENDPOINT_NAME)
 
 with open('config.yml', 'r') as file:
     config = yaml.safe_load(file)
@@ -78,18 +84,40 @@ if st.button('Submit', type='primary'):
         passage = hit['_source']['passage']
         doc_id = hit['_source']['doc_id']
         passage_id = hit['_source']['passage_id']
-        qa_prompt = f'Context: {passage}\nQuestion: {prompt}\nAnswer:'
+        #qa_prompt = f'Context: {passage}\nQuestion: {prompt}\nAnswer:'
+        qa_prompt  = f'Answer based on context:\n{passage}\n{prompt}'
 
         report = []
         res_box = st.empty()
         
-        response = cohere_client.generate(prompt=qa_prompt, 
-                                          max_tokens=64, 
-                                          temperature=0.5, 
-                                          return_likelihoods='GENERATION')
-        
-        answer = response.generations[0].text.strip().replace('\n', '')
+    
+        payload = {'text_inputs': qa_prompt, 
+               'max_length': MAX_LENGTH, 
+               'num_return_sequences': NUM_RETURN_SEQUENCES,
+               'top_k': TOP_K,
+               'top_p': TOP_P,
+               'temperature': 0.25}
+
+        payload = json.dumps(payload).encode('utf-8')
+
+        response = sagemaker_client.invoke_endpoint(EndpointName=TEXT_GENERATION_ENDPOINT_NAME, 
+                                      ContentType=CONTENT_TYPE, 
+                                      Body=payload)
+
+        model_predictions = json.loads(response['Body'].read())
+        answer = model_predictions['generated_texts'][0]
         answer = clean_text(answer)
+        #logger.info(f'Answer:{generated_text}')
+        
+       
+        #response = cohere_client.generate(prompt=qa_prompt, 
+         #                                 max_tokens=64, 
+          #                                temperature=0.5, 
+           #                               return_likelihoods='GENERATION')
+        #
+        #answer = response.generations[0].text.strip().replace('\n', '')
+        #answer = clean_text(answer)
+
         
         if len(answer) > 0:
             res_box.markdown(f'**Answer:**\n*{answer}*')
