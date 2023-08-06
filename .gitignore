@@ -131,3 +131,9 @@ dmypy.json
 # Pyre type checker
 .pyre/
 data/chunks/019-checkpoint_10
+
+# Ignore dependencies folder
+dependencies/
+
+#Ignore data chunks folder
+data/chunks/
