@@ -3,4 +3,8 @@ credentials:
   password: 'Os_test123'
 domain:
   endpoint: https://search-sematic-search-4vgtrb5lpgqsss26pxewnosnjy.eu-west-1.es.amazonaws.com
-  index: legal-passages
+  index: rfp-nestle
+  index_legal: legal-passages
+bedrock-preview:
+  endpoint: 'https://prod.us-west-2.frontend.bedrock.aws.dev'
+  region: 'us-west-2'

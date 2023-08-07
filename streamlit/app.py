@@ -1,5 +1,18 @@
-from requests.auth import HTTPBasicAuth
-#from cohere_sagemaker import Client
+import os
+import tempfile
+from langchain.document_loaders import PyPDFLoader
+from langchain.memory import ConversationBufferMemory
+from langchain.memory.chat_message_histories import StreamlitChatMessageHistory
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.callbacks.base import BaseCallbackHandler
+from langchain.chains import ConversationalRetrievalChain
+from langchain.vectorstores import DocArrayInMemorySearch
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.llms.bedrock import Bedrock
+from langchain.embeddings import BedrockEmbeddings
+from langchain.vectorstores import OpenSearchVectorSearch
+from langchain import PromptTemplate
+from utils import bedrock
 import streamlit as st
 import requests
 import boto3
@@ -8,18 +21,12 @@ import yaml
 import re
 
 
-TEXT_EMBEDDING_ENDPOINT_NAME = 'huggingface-textembedding-gpt-j-6b-fp16-1691075868'
-TEXT_GENERATION_MODEL_ENDPOINT_NAME_COHERE = 'cohere-medium-1680827379'
-TEXT_GENERATION_ENDPOINT_NAME = 'huggingface-text2text-flan-t5-xl-1691100607'
-MAX_LENGTH = 1024
-NUM_RETURN_SEQUENCES = 1
-TOP_K = 100
-TOP_P = 0.9
-DO_SAMPLE = True 
-CONTENT_TYPE = 'application/json'
+st.set_page_config(page_title="Chat with RFP Documents", page_icon="🦜")
+st.title("🦜 Chat with RFP Documents")
 
-sagemaker_client = boto3.client('runtime.sagemaker')
-#cohere_client = Client(endpoint_name=TEXT_GENERATION_ENDPOINT_NAME)
+sagemaker_client = boto3.client('runtime.sagemaker',
+                                 aws_access_key_id='AKIAWQNXYHGMOZGRPLWB',
+                                 aws_secret_access_key = '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')
 
 with open('config.yml', 'r') as file:
     config = yaml.safe_load(file)
@@ -30,99 +37,138 @@ es_password = config['credentials']['password']
 domain_endpoint = config['domain']['endpoint']
 domain_index = config['domain']['index']
 
+b_endpoint = config['bedrock-preview']['endpoint']
+b_region = config['bedrock-preview']['region']
+
 URL = f'{domain_endpoint}/{domain_index}/_search'
 
-# --------------------------------- STREAMLIT APP --------------------------------- 
+boto3_bedrock = bedrock.get_bedrock_client(
+    aws_access_key_id='AKIAWQNXYHGMOZGRPLWB',
+    aws_secret_access_key = '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',
+    endpoint_url=b_endpoint,
+    region=b_region,
+)
 
-st.subheader('Legal Question & Answering')
+#@st.cache_resource(ttl="1h")
+def configure_retriever(uploaded_files):
+    # Read documents
+    docs = []
+    temp_dir = tempfile.TemporaryDirectory()
+    #for file in uploaded_files:
+    #    temp_filepath = os.path.join(temp_dir.name, file.name)
+    #    with open(temp_filepath, "wb") as f:
+     #       f.write(file.getvalue())
+     #   loader = PyPDFLoader(temp_filepath)
+     #   docs.extend(loader.load())
 
-# Receive user input from the chat UI
-prompt = st.text_input('Question: ', placeholder='Ask me anything ...', key='input')
+    # Split documents
+    #text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=400)
+    #splits = text_splitter.split_documents(docs)
 
-
-def clean_text(text):
-    # Use regular expression to match and remove any trailing characters after the last period.
-    cleaned_text = re.sub(r'\.[^\.]*$', '.', text)
-    return cleaned_text
-
-
-if st.button('Submit', type='primary'):
-    st.markdown('----')
-    payload = {'text_inputs': [prompt]}
-    payload = json.dumps(payload).encode('utf-8')
-    response = sagemaker_client.invoke_endpoint(EndpointName=TEXT_EMBEDDING_ENDPOINT_NAME, 
-                                                ContentType='application/json', 
-                                                Body=payload)
-    body = json.loads(response['Body'].read())
-    embedding = body['embedding'][0]
-
-    K = 3  # Retrieve Top 3 matching context
-
-    query = {
-        'size': K,
-        'query': {
-            'knn': {
-                'embedding': {
-                    'vector': embedding,
-                    'k': K
-                }
-            }
-        }
-    }
-
-    response = requests.post(URL, auth=HTTPBasicAuth(es_username, es_password), json=query)
-    response_json = response.json()
-    hits = response_json['hits']['hits']
-
-    res_box = st.empty()
+    # Create embeddings and store in vectordb
+    br_embeddings = BedrockEmbeddings(client=boto3_bedrock)
     
-    if not hits:
-        res_box.write("Sorry! I couldn't find an answer to your question")
+    # vector store index
+    vectordb = OpenSearchVectorSearch(
+            opensearch_url=domain_endpoint,
+            is_aoss=False,
+            verify_certs = True,
+            http_auth=(es_username, es_password),
+            index_name = domain_index,
+            embedding_function=br_embeddings)
 
-    for hit in hits:
-        score = hit['_score']
-        passage = hit['_source']['passage']
-        doc_id = hit['_source']['doc_id']
-        passage_id = hit['_source']['passage_id']
-        #qa_prompt = f'Context: {passage}\nQuestion: {prompt}\nAnswer:'
-        qa_prompt  = f'Answer based on context:\n{passage}\n{prompt}'
+    # Define retriever
+    retriever = vectordb.as_retriever(search_type='similarity', search_kwargs={"k": 8, "vector_field":"embedding",  "text_field":    "passage", "metadata_field": "*"})
 
-        report = []
-        res_box = st.empty()
-        
-    
-        payload = {'text_inputs': qa_prompt, 
-               'max_length': MAX_LENGTH, 
-               'num_return_sequences': NUM_RETURN_SEQUENCES,
-               'top_k': TOP_K,
-               'top_p': TOP_P,
-               'temperature': 0.25}
+    return retriever
 
-        payload = json.dumps(payload).encode('utf-8')
 
-        response = sagemaker_client.invoke_endpoint(EndpointName=TEXT_GENERATION_ENDPOINT_NAME, 
-                                      ContentType=CONTENT_TYPE, 
-                                      Body=payload)
+class StreamHandler(BaseCallbackHandler):
+    def __init__(self, container: st.delta_generator.DeltaGenerator, initial_text: str = ""):
+        self.container = container
+        self.text = initial_text
 
-        model_predictions = json.loads(response['Body'].read())
-        answer = model_predictions['generated_texts'][0]
-        answer = clean_text(answer)
-        #logger.info(f'Answer:{generated_text}')
-        
-       
-        #response = cohere_client.generate(prompt=qa_prompt, 
-         #                                 max_tokens=64, 
-          #                                temperature=0.5, 
-           #                               return_likelihoods='GENERATION')
-        #
-        #answer = response.generations[0].text.strip().replace('\n', '')
-        #answer = clean_text(answer)
+    def on_llm_new_token(self, token: str, **kwargs) -> None:
+        self.text += token
+        self.container.markdown(self.text)
 
-        
-        if len(answer) > 0:
-            res_box.markdown(f'**Answer:**\n*{answer}*')
 
-        res_box = st.empty()
-        res_box.markdown(f'**Reference**:\n*Document = {doc_id} | Passage = {passage_id} | Score = {score}*')
-        res_box = st.empty()
-        st.markdown('----')
+class PrintRetrievalHandler(BaseCallbackHandler):
+    def __init__(self, container):
+        self.container = container.expander("Context Retrieval")
+
+    def on_retriever_start(self, query: str, question, **kwargs):
+        self.container.write(f"**Question:** {question}")
+
+    def on_retriever_end(self, documents, **kwargs):
+        for idx, doc in enumerate(documents):
+            source = os.path.basename(doc.metadata["doc_name"])
+            page = os.path.basename(str(doc.metadata["page"]))
+            self.container.write(f"**Page {page} from {source}**")
+            self.container.write(doc.page_content)
+
+
+
+uploaded_files = st.sidebar.file_uploader(
+    label="Upload PDF files", type=["pdf"], accept_multiple_files=True
+)
+#if not uploaded_files:
+#    st.info("Please upload PDF documents to continue.")
+ #   st.stop()
+
+retriever = configure_retriever(uploaded_files)
+
+# Setup memory for contextual conversation
+msgs = StreamlitChatMessageHistory()
+memory = ConversationBufferMemory(memory_key="chat_history",output_key='answer', chat_memory=msgs, return_messages=True)
+
+# Setup LLM and QA chain
+#llm = ChatOpenAI(
+#    model_name="gpt-3.5-turbo", openai_api_key=openai_api_key, temperature=0, streaming=True
+#)
+
+titan_llm = Bedrock(model_id="amazon.titan-tg1-large", client=boto3_bedrock, model_kwargs = {"maxTokenCount":4096})
+qa_chain = ConversationalRetrievalChain.from_llm(
+    llm=titan_llm, 
+    #retriever=vectorstore_faiss_aws.as_retriever(), 
+    #retriever=vectorstore_faiss_aws.as_retriever(),
+    retriever =retriever,
+    memory=memory,
+    #verbose=True,
+    #condense_question_prompt=CONDENSE_QUESTION_PROMPT, # create_prompt_template(), 
+    chain_type='stuff', # 'refine',
+    return_source_documents=True,
+    max_tokens_limit=4096
+)
+
+qa_chain.combine_docs_chain.llm_chain.prompt = PromptTemplate.from_template("""
+{context}
+
+Answer the question inside the <q></q> XML tags. 
+
+<q>{question}</q>
+
+Do not use any XML tags in the answer. If the answer is not in the context say "Sorry, I don't know, as the answer was not found in the context."
+
+Answer:""")
+
+#qa_chain = ConversationalRetrievalChain.from_llm(
+#    llm, retriever=retriever, memory=memory, verbose=True
+#)
+
+if len(msgs.messages) == 0 or st.sidebar.button("Clear message history"):
+    msgs.clear()
+    msgs.add_ai_message("How can I help you?")
+
+avatars = {"human": "user", "ai": "assistant"}
+for msg in msgs.messages:
+    st.chat_message(avatars[msg.type]).write(msg.content)
+
+if user_query := st.chat_input(placeholder="Ask me anything!"):
+    st.chat_message("user").write(user_query)
+
+    with st.chat_message("assistant"):
+        retrieval_handler = PrintRetrievalHandler(st.container())
+        stream_handler = StreamHandler(st.empty())
+        response = qa_chain(user_query, callbacks=[retrieval_handler, stream_handler])
+        st.write(response['answer'],unsafe_allow_html=True)

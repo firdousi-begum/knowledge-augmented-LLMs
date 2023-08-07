@@ -1,0 +1,17 @@
+
+Collecting usage statistics. To deactivate, set browser.gatherUsageStats to False.
+
+
+  You can now view your Streamlit app in your browser.
+
+  Network URL: http://169.255.255.2:8514
+  External URL: http://52.17.208.239:8514
+
+Create new client
+  Using region: us-west-2
+boto3 Bedrock client successfully created!
+bedrock(https://prod.us-west-2.frontend.bedrock.aws.dev)
+Create new client
+  Using region: us-west-2
+boto3 Bedrock client successfully created!
+bedrock(https://prod.us-west-2.frontend.bedrock.aws.dev)
