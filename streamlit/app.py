@@ -25,8 +25,8 @@ st.set_page_config(page_title="Chat with RFP Documents", page_icon="🦜")
 st.title("🦜 Chat with RFP Documents")
 
 sagemaker_client = boto3.client('runtime.sagemaker',
-                                 aws_access_key_id='AKIAWQNXYHGMOZGRPLWB',
-                                 aws_secret_access_key = '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')
+                                 aws_access_key_id='',
+                                 aws_secret_access_key = '')
 
 with open('config.yml', 'r') as file:
     config = yaml.safe_load(file)
@@ -43,8 +43,8 @@ b_region = config['bedrock-preview']['region']
 URL = f'{domain_endpoint}/{domain_index}/_search'
 
 boto3_bedrock = bedrock.get_bedrock_client(
-    aws_access_key_id='AKIAWQNXYHGMOZGRPLWB',
-    aws_secret_access_key = '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',
+    aws_access_key_id='',
+    aws_secret_access_key = '',
     endpoint_url=b_endpoint,
     region=b_region,
 )
